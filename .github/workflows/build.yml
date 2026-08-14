@@ -90,7 +90,7 @@ jobs:
           print("[+] Successfully removed obsolete ksu_handle_devpts from fs/devpts/inode.c")
           '
 
-          # Configure defconfigs for Manual Hook mode
+          # Configure defconfigs for Manual Hook mode and Device Tree Overlays
           for conf in arch/arm64/configs/nabu_defconfig arch/arm64/configs/nabu-perf_defconfig; do
             if [ -f "$conf" ]; then
               echo "[+] Updating $conf..."
@@ -122,7 +122,7 @@ jobs:
           
           echo "[+] Pre-Flight Checks Passed 100%!"
 
-      - name: Compile Kernel Image
+      - name: Compile Kernel, DTBs & DTBO Image
         working-directory: kernel_source
         run: |
           export PATH="$(pwd)/../clang/bin:$PATH"
@@ -142,7 +142,7 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             nabu_defconfig
 
-          # Step 2: Compile Kernel with ThinLTO-compatible toolchain
+          # Step 2: Compile discrete kernel image, device tree blobs, and dtbo container
           make -j$(nproc --all) O=out \
             ARCH=arm64 \
             CC=clang \
@@ -155,39 +155,74 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            Image.gz-dtb || \
-          make -j$(nproc --all) O=out \
-            ARCH=arm64 \
-            CC=clang \
-            LD=ld.lld \
-            AR=llvm-ar \
-            NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            Image.gz dtbs
+            Image.gz dtbs dtbo.img
 
       - name: Package with AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git anykernel
           cd anykernel
 
-          # Configure AnyKernel3 for Xiaomi Pad 5 (nabu)
-          sed -i 's/device.name1=.*/device.name1=nabu/' anykernel.sh
-          sed -i 's/device.name2=.*/device.name2=Xiaomi Pad 5/' anykernel.sh
-          sed -i 's/block=.*/block=\/dev\/block\/bootdevice\/by-name\/boot;/' anykernel.sh
-          sed -i 's/is_slot_device=0/is_slot_device=auto/' anykernel.sh
+          # Configure anykernel.sh to match known-working Nabu release
+          cat << 'EOF' > anykernel.sh
+          # AnyKernel3 Ramdisk Mod Script
+          # osm0sis @ xda-developers
+          properties() { '
+          kernel.string=Mahiro HyperOS Kernel + KernelSU-Next v3 for Xiaomi Pad 5 (nabu)
+          device.name1=nabu
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          '; }
+          block=boot;
+          is_slot_device=1;
+          ramdisk_compression=auto;
+          . tools/ak3-core.sh;
+          set_perm_recursive 0 0 755 644 $ramdisk/*;
+          set_perm_recursive 0 0 750 750 $ramdisk/init* $ramdisk/sbin;
+          dump_boot;
+          if [ -d $ramdisk/overlay ]; then
+          	rm -rf $ramdisk/overlay;
+          fi;
+          patch_cmdline androidboot.force_normal_boot=1
+          write_boot;
 
-          # Copy compiled outputs
-          if [ -f ../kernel_source/out/arch/arm64/boot/Image.gz-dtb ]; then
-            cp ../kernel_source/out/arch/arm64/boot/Image.gz-dtb Image.gz-dtb
-          elif [ -f ../kernel_source/out/arch/arm64/boot/Image.gz ]; then
-            cp ../kernel_source/out/arch/arm64/boot/Image.gz Image.gz
-            find ../kernel_source/out/arch/arm64/boot/dts -name "*.dtb" -exec cp {} dtb \; || true
-          fi
+          ## vendor_boot shell variables
+          block=/dev/block/bootdevice/by-name/vendor_boot;
+          is_slot_device=1;
+          ramdisk_compression=auto;
+          patch_vbmeta_flag=auto;
+
+          # reset for vendor_boot patching
+          reset_ak;
+
+          # vendor_boot install
+          dump_boot;
+
+          write_boot;
+          EOF
+          sed -i 's/^[ \t]*//' anykernel.sh
+
+          # Verify compiled kernel artifacts exist
+          test -f ../kernel_source/out/arch/arm64/boot/Image.gz || { echo "[-] Missing Image.gz"; exit 1; }
+          test -f ../kernel_source/out/arch/arm64/boot/dtbo.img || { echo "[-] Missing dtbo.img"; exit 1; }
+          test -f ../kernel_source/out/arch/arm64/boot/dts/qcom/sm8150.dtb || { echo "[-] Missing sm8150.dtb"; exit 1; }
+
+          # 1. Copy standalone kernel image
+          cp ../kernel_source/out/arch/arm64/boot/Image.gz Image.gz
+
+          # 2. Construct standalone DTB matching known-working release order
+          cat ../kernel_source/out/arch/arm64/boot/dts/qcom/sm8150.dtb \
+              ../kernel_source/out/arch/arm64/boot/dts/qcom/sm8150p.dtb \
+              ../kernel_source/out/arch/arm64/boot/dts/qcom/sm8150p-v2.dtb \
+              ../kernel_source/out/arch/arm64/boot/dts/qcom/sm8150-v2.dtb > dtb
+
+          # 3. Copy standalone DTBO image
+          cp ../kernel_source/out/arch/arm64/boot/dtbo.img dtbo.img
+
+          echo "[+] Verified Package Artifacts:"
+          ls -lh Image.gz dtb dtbo.img
 
           BUILD_DATE=$(date +'%Y%m%d_%H%M')
           ZIP_NAME="Mahiro-HyperOS-KSUNext-v3-Nabu-${BUILD_DATE}.zip"
