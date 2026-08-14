@@ -42,9 +42,12 @@ jobs:
         run: |
           git clone --depth=1 https://github.com/utziacre/android_kernel_xiaomi_nabu.git kernel_source
 
-      - name: Clone AOSP Clang Toolchain (r416183b)
+      - name: Download Official AOSP Clang Toolchain (r416183b)
         run: |
-          git clone --depth=1 https://gitlab.com/crdroidandroid/android_prebuilts_clang_host_linux-x86_clang-r416183b.git clang
+          mkdir -p clang
+          curl -LSs "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12-release/clang-r416183b.tar.gz" -o clang.tar.gz
+          tar -xzf clang.tar.gz -C clang
+          rm -f clang.tar.gz
 
       - name: Integrate KernelSU-Next (${{ inputs.ksu_tag }})
         working-directory: kernel_source
@@ -68,10 +71,10 @@ jobs:
               sed -i '/CONFIG_KSU/d' "$conf" || true
               sed -i '/CONFIG_OVERLAY_FS/d' "$conf" || true
               cat << 'EOF' >> "$conf"
-          CONFIG_KSU=y
-          CONFIG_KSU_MANUAL_HOOK=y
-          CONFIG_OVERLAY_FS=y
-          EOF
+CONFIG_KSU=y
+CONFIG_KSU_MANUAL_HOOK=y
+CONFIG_OVERLAY_FS=y
+EOF
             fi
           done
 
