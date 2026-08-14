@@ -35,7 +35,7 @@ jobs:
           sudo apt update
           sudo apt install -y --no-install-recommends \
             build-essential bc flex bison libssl-dev libelf-dev \
-            libncurses-dev zip curl git lld llvm \
+            libncurses-dev zip curl git lld llvm python3 \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
             binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
 
@@ -50,7 +50,7 @@ jobs:
           tar -xzf clang.tar.gz -C clang
           rm -f clang.tar.gz
 
-      - name: Integrate KernelSU-Next (${{ inputs.ksu_tag }}) & Supercall Hooks
+      - name: Integrate KernelSU-Next (${{ inputs.ksu_tag }}) & Apply Source Fixes
         working-directory: kernel_source
         run: |
           echo "[+] Integrating KernelSU-Next (${{ inputs.ksu_tag }})..."
@@ -65,11 +65,30 @@ jobs:
           grep -q "kernelsu" drivers/Makefile || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
           grep -q "drivers/kernelsu/Kconfig" drivers/Kconfig || sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' drivers/Kconfig
 
-          # Patch KernelSU-Next v3 Supercall hook into kernel/reboot.c if not present
-          if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
-            echo "[+] Injecting ksu_handle_sys_reboot hook into kernel/reboot.c..."
-            sed -i '/SYSCALL_DEFINE4(reboot/a #ifdef CONFIG_KSU_MANUAL_HOOK\n\textern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\n\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n#endif' kernel/reboot.c
-          fi
+          # Patch KernelSU-Next v3 Supercall hook into kernel/reboot.c (Placement B: after local variables, before CAP_SYS_BOOT)
+          python3 -c '
+          with open("kernel/reboot.c", "r") as f:
+              c = f.read()
+          target = "int ret = 0;\n"
+          hook = "int ret = 0;\n\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\textern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\n\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n#endif\n"
+          if "ksu_handle_sys_reboot" not in c and target in c:
+              c = c.replace(target, hook, 1)
+              with open("kernel/reboot.c", "w") as f:
+                  f.write(c)
+              print("[+] Successfully inserted ksu_handle_sys_reboot into kernel/reboot.c")
+          '
+
+          # Remove obsolete legacy ksu_handle_devpts hooks from fs/devpts/inode.c
+          python3 -c '
+          with open("fs/devpts/inode.c", "r") as f:
+              c = f.read()
+          c = c.replace("#ifdef CONFIG_KSU\nextern int ksu_handle_devpts(struct inode*);\n#endif\n", "")
+          c = c.replace("#ifdef CONFIG_KSU\n        ksu_handle_devpts(dentry->d_inode);\n        #endif", "")
+          c = c.replace("#ifdef CONFIG_KSU\n\tksu_handle_devpts(dentry->d_inode);\n\t#endif", "")
+          with open("fs/devpts/inode.c", "w") as f:
+              f.write(c)
+          print("[+] Successfully removed obsolete ksu_handle_devpts from fs/devpts/inode.c")
+          '
 
           # Configure defconfigs for Manual Hook mode
           for conf in arch/arm64/configs/nabu_defconfig arch/arm64/configs/nabu-perf_defconfig; do
@@ -98,6 +117,7 @@ jobs:
           # Verify KernelSU manual hooks
           grep -q "ksu_handle_execveat" fs/exec.c || { echo "[-] Missing ksu_handle_execveat"; exit 1; }
           grep -q "ksu_handle_sys_reboot" kernel/reboot.c || { echo "[-] Missing ksu_handle_sys_reboot"; exit 1; }
+          ! grep -q "ksu_handle_devpts" fs/devpts/inode.c || { echo "[-] Obsolete ksu_handle_devpts still present"; exit 1; }
           grep -q "CONFIG_KSU_MANUAL_HOOK=y" arch/arm64/configs/nabu_defconfig || { echo "[-] Missing CONFIG_KSU_MANUAL_HOOK"; exit 1; }
           
           echo "[+] Pre-Flight Checks Passed 100%!"
