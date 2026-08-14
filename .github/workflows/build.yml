@@ -50,7 +50,7 @@ jobs:
           tar -xzf clang.tar.gz -C clang
           rm -f clang.tar.gz
 
-      - name: Integrate KernelSU-Next (${{ inputs.ksu_tag }})
+      - name: Integrate KernelSU-Next (${{ inputs.ksu_tag }}) & Supercall Hooks
         working-directory: kernel_source
         run: |
           echo "[+] Integrating KernelSU-Next (${{ inputs.ksu_tag }})..."
@@ -65,6 +65,12 @@ jobs:
           grep -q "kernelsu" drivers/Makefile || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
           grep -q "drivers/kernelsu/Kconfig" drivers/Kconfig || sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' drivers/Kconfig
 
+          # Patch KernelSU-Next v3 Supercall hook into kernel/reboot.c if not present
+          if ! grep -q "ksu_handle_sys_reboot" kernel/reboot.c; then
+            echo "[+] Injecting ksu_handle_sys_reboot hook into kernel/reboot.c..."
+            sed -i '/SYSCALL_DEFINE4(reboot/a #ifdef CONFIG_KSU_MANUAL_HOOK\n\textern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\n\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n#endif' kernel/reboot.c
+          fi
+
           # Configure defconfigs for Manual Hook mode
           for conf in arch/arm64/configs/nabu_defconfig arch/arm64/configs/nabu-perf_defconfig; do
             if [ -f "$conf" ]; then
@@ -77,12 +83,31 @@ jobs:
             fi
           done
 
+      - name: Pre-Flight Integrity Check
+        working-directory: kernel_source
+        run: |
+          echo "[+] Running Pre-Flight Verification Checks..."
+          
+          # Verify Toolchain binaries
+          export PATH="$(pwd)/../clang/bin:$PATH"
+          clang --version | head -n 1
+          ld.lld --version | head -n 1
+          aarch64-linux-gnu-gcc --version | head -n 1
+          arm-linux-gnueabi-gcc --version | head -n 1
+          
+          # Verify KernelSU manual hooks
+          grep -q "ksu_handle_execveat" fs/exec.c || { echo "[-] Missing ksu_handle_execveat"; exit 1; }
+          grep -q "ksu_handle_sys_reboot" kernel/reboot.c || { echo "[-] Missing ksu_handle_sys_reboot"; exit 1; }
+          grep -q "CONFIG_KSU_MANUAL_HOOK=y" arch/arm64/configs/nabu_defconfig || { echo "[-] Missing CONFIG_KSU_MANUAL_HOOK"; exit 1; }
+          
+          echo "[+] Pre-Flight Checks Passed 100%!"
+
       - name: Compile Kernel Image
         working-directory: kernel_source
         run: |
           export PATH="$(pwd)/../clang/bin:$PATH"
 
-          # Prepare Defconfig
+          # Step 1: Generate defconfig with full LLVM parameter set
           make O=out \
             ARCH=arm64 \
             CC=clang \
@@ -97,7 +122,7 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             nabu_defconfig
 
-          # Build Kernel with LLVM toolchain for Clang ThinLTO
+          # Step 2: Compile Kernel with ThinLTO-compatible toolchain
           make -j$(nproc --all) O=out \
             ARCH=arm64 \
             CC=clang \
