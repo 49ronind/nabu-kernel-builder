@@ -50,54 +50,21 @@ jobs:
           tar -xzf clang.tar.gz -C clang
           rm -f clang.tar.gz
 
-      - name: Integrate KernelSU-Next (${{ inputs.ksu_tag }}) & Apply Source Fixes
+      - name: Integrate KernelSU-Next (${{ inputs.ksu_tag }})
         working-directory: kernel_source
         run: |
           echo "[+] Integrating KernelSU-Next (${{ inputs.ksu_tag }})..."
           
-          # Clone KernelSU-Next legacy driver
-          git clone --depth=1 -b ${{ inputs.ksu_tag }} https://github.com/KernelSU-Next/KernelSU-Next.git KernelSU-Next
-          
-          # Link into kernel drivers tree
-          ln -sf "$(pwd)/KernelSU-Next/kernel" drivers/kernelsu
-          
-          # Link into Makefile and Kconfig if not present
-          grep -q "kernelsu" drivers/Makefile || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> drivers/Makefile
-          grep -q "drivers/kernelsu/Kconfig" drivers/Kconfig || sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+          # Run official KernelSU-Next setup script for specified tag/branch
+          curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s ${{ inputs.ksu_tag }}
 
-          # Patch KernelSU-Next v3 Supercall hook into kernel/reboot.c (Placement B: after local variables, before CAP_SYS_BOOT)
-          python3 -c '
-          with open("kernel/reboot.c", "r") as f:
-              c = f.read()
-          target = "int ret = 0;\n"
-          hook = "int ret = 0;\n\n#ifdef CONFIG_KSU_MANUAL_HOOK\n\textern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);\n\tksu_handle_sys_reboot(magic1, magic2, cmd, &arg);\n#endif\n"
-          if "ksu_handle_sys_reboot" not in c and target in c:
-              c = c.replace(target, hook, 1)
-              with open("kernel/reboot.c", "w") as f:
-                  f.write(c)
-              print("[+] Successfully inserted ksu_handle_sys_reboot into kernel/reboot.c")
-          '
-
-          # Remove obsolete legacy ksu_handle_devpts hooks from fs/devpts/inode.c
-          python3 -c '
-          with open("fs/devpts/inode.c", "r") as f:
-              c = f.read()
-          c = c.replace("#ifdef CONFIG_KSU\nextern int ksu_handle_devpts(struct inode*);\n#endif\n", "")
-          c = c.replace("#ifdef CONFIG_KSU\n        ksu_handle_devpts(dentry->d_inode);\n        #endif", "")
-          c = c.replace("#ifdef CONFIG_KSU\n\tksu_handle_devpts(dentry->d_inode);\n\t#endif", "")
-          with open("fs/devpts/inode.c", "w") as f:
-              f.write(c)
-          print("[+] Successfully removed obsolete ksu_handle_devpts from fs/devpts/inode.c")
-          '
-
-          # Configure defconfigs for KernelSU Manual Hook mode and OverlayFS
+          # Configure defconfigs for KernelSU and OverlayFS
           for conf in arch/arm64/configs/nabu_defconfig arch/arm64/configs/nabu-perf_defconfig; do
             if [ -f "$conf" ]; then
               echo "[+] Updating $conf..."
               sed -i '/CONFIG_KSU/d' "$conf" || true
               sed -i '/CONFIG_OVERLAY_FS/d' "$conf" || true
               echo "CONFIG_KSU=y" >> "$conf"
-              echo "CONFIG_KSU_MANUAL_HOOK=y" >> "$conf"
               echo "CONFIG_OVERLAY_FS=y" >> "$conf"
             fi
           done
@@ -114,11 +81,13 @@ jobs:
           aarch64-linux-gnu-gcc --version | head -n 1
           arm-linux-gnueabi-gcc --version | head -n 1
           
-          # Verify KernelSU manual hooks and config values
+          # Verify KernelSU in-tree static hooks and defconfig values
           grep -q "ksu_handle_execveat" fs/exec.c || { echo "[-] Missing ksu_handle_execveat"; exit 1; }
-          grep -q "ksu_handle_sys_reboot" kernel/reboot.c || { echo "[-] Missing ksu_handle_sys_reboot"; exit 1; }
-          ! grep -q "ksu_handle_devpts" fs/devpts/inode.c || { echo "[-] Obsolete ksu_handle_devpts still present"; exit 1; }
-          grep -q "CONFIG_KSU_MANUAL_HOOK=y" arch/arm64/configs/nabu_defconfig || { echo "[-] Missing CONFIG_KSU_MANUAL_HOOK"; exit 1; }
+          grep -q "ksu_handle_faccessat" fs/open.c || { echo "[-] Missing ksu_handle_faccessat"; exit 1; }
+          grep -q "ksu_handle_vfs_read" fs/read_write.c || { echo "[-] Missing ksu_handle_vfs_read"; exit 1; }
+          grep -q "ksu_handle_stat" fs/stat.c || { echo "[-] Missing ksu_handle_stat"; exit 1; }
+          grep -q "ksu_handle_devpts" fs/devpts/inode.c || { echo "[-] Missing ksu_handle_devpts"; exit 1; }
+          grep -q "CONFIG_KSU=y" arch/arm64/configs/nabu_defconfig || { echo "[-] Missing CONFIG_KSU"; exit 1; }
           grep -q "CONFIG_MILLET=y" arch/arm64/configs/nabu_defconfig || { echo "[-] Missing CONFIG_MILLET"; exit 1; }
           grep -q "CONFIG_CPUSET_ASSIST=y" arch/arm64/configs/nabu_defconfig || { echo "[-] Missing CONFIG_CPUSET_ASSIST"; exit 1; }
           
@@ -146,7 +115,7 @@ jobs:
 
           # Print verified active settings from resolved .config
           echo "[+] Active Defconfig Verification from out/.config:"
-          grep -E "CONFIG_MILLET|CONFIG_STUNE_ASSIST|CONFIG_CPUSET_ASSIST|CONFIG_LITTLE_CPU_MASK|CONFIG_BIG_CPU_MASK|CONFIG_PRIME_CPU_MASK" out/.config || true
+          grep -E "CONFIG_MILLET|CONFIG_STUNE_ASSIST|CONFIG_CPUSET_ASSIST|CONFIG_LITTLE_CPU_MASK|CONFIG_BIG_CPU_MASK|CONFIG_PRIME_CPU_MASK|CONFIG_KSU|CONFIG_OVERLAY_FS" out/.config || true
 
           # Step 2: Compile discrete kernel image and device tree blobs (bypasses mkdtboimg.py / python2)
           make -j$(nproc --all) O=out \
