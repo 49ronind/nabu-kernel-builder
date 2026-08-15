@@ -1,4 +1,4 @@
-name: Build Xiaomi Pad 5 (nabu) HyperOS Kernel with KernelSU-Next v3
+name: Build Xiaomi Pad 5 (nabu) HyperOS Kernel with KernelSU-Next
 
 on:
   workflow_dispatch:
@@ -37,11 +37,12 @@ jobs:
             build-essential bc flex bison libssl-dev libelf-dev \
             libncurses-dev zip curl git lld llvm python3 file \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
+            binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi \
+            device-tree-compiler
 
-      - name: Clone Mahiro Nabu Kernel Source (HyperOS Branch)
+      - name: Clone Nabu HyperOS Kernel Source
         run: |
-          git clone --depth=1 -b hyperos https://github.com/utziacre/android_kernel_xiaomi_nabu.git kernel_source
+          git clone --depth=1 -b HyperOS1-ksu-next https://github.com/Kuugo2002/xiaomi_kernel_nabu.git kernel_source
 
       - name: Download Official AOSP Clang Toolchain (r416183b)
         run: |
@@ -55,16 +56,20 @@ jobs:
         run: |
           echo "[+] Integrating KernelSU-Next (${{ inputs.ksu_tag }})..."
           
+          # Clean up any leftover submodules/symlinks
+          rm -rf KernelSU-Next drivers/kernelsu
+          
           # Run official KernelSU-Next setup script for specified tag/branch
           curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" | bash -s ${{ inputs.ksu_tag }}
 
-          # Configure defconfigs for KernelSU and OverlayFS
+          # Configure defconfigs for KernelSU-Next manual hook mode and OverlayFS
           for conf in arch/arm64/configs/nabu_defconfig arch/arm64/configs/nabu-perf_defconfig; do
             if [ -f "$conf" ]; then
               echo "[+] Updating $conf..."
               sed -i '/CONFIG_KSU/d' "$conf" || true
               sed -i '/CONFIG_OVERLAY_FS/d' "$conf" || true
               echo "CONFIG_KSU=y" >> "$conf"
+              echo "CONFIG_KSU_MANUAL_HOOK=y" >> "$conf"
               echo "CONFIG_OVERLAY_FS=y" >> "$conf"
             fi
           done
@@ -81,15 +86,15 @@ jobs:
           aarch64-linux-gnu-gcc --version | head -n 1
           arm-linux-gnueabi-gcc --version | head -n 1
           
-          # Verify KernelSU in-tree static hooks and defconfig values
-          grep -q "ksu_handle_execveat" fs/exec.c || { echo "[-] Missing ksu_handle_execveat"; exit 1; }
-          grep -q "ksu_handle_faccessat" fs/open.c || { echo "[-] Missing ksu_handle_faccessat"; exit 1; }
-          grep -q "ksu_handle_vfs_read" fs/read_write.c || { echo "[-] Missing ksu_handle_vfs_read"; exit 1; }
-          grep -q "ksu_handle_stat" fs/stat.c || { echo "[-] Missing ksu_handle_stat"; exit 1; }
-          grep -q "ksu_handle_devpts" fs/devpts/inode.c || { echo "[-] Missing ksu_handle_devpts"; exit 1; }
-          grep -q "CONFIG_KSU=y" arch/arm64/configs/nabu_defconfig || { echo "[-] Missing CONFIG_KSU"; exit 1; }
-          grep -q "CONFIG_MILLET=y" arch/arm64/configs/nabu_defconfig || { echo "[-] Missing CONFIG_MILLET"; exit 1; }
-          grep -q "CONFIG_CPUSET_ASSIST=y" arch/arm64/configs/nabu_defconfig || { echo "[-] Missing CONFIG_CPUSET_ASSIST"; exit 1; }
+          # Verify KernelSU-Next manual hook suite in kernel source
+          grep -q "ksu_handle_execveat" fs/exec.c || { echo "[-] Missing ksu_handle_execveat in fs/exec.c"; exit 1; }
+          grep -q "ksu_handle_faccessat" fs/open.c || { echo "[-] Missing ksu_handle_faccessat in fs/open.c"; exit 1; }
+          grep -q "ksu_handle_vfs_read" fs/read_write.c || { echo "[-] Missing ksu_handle_vfs_read in fs/read_write.c"; exit 1; }
+          grep -q "ksu_handle_stat" fs/stat.c || { echo "[-] Missing ksu_handle_stat in fs/stat.c"; exit 1; }
+          grep -q "ksu_handle_sys_reboot" kernel/reboot.c || { echo "[-] Missing ksu_handle_sys_reboot in kernel/reboot.c"; exit 1; }
+          grep -q "path_umount" fs/namespace.c || { echo "[-] Missing path_umount in fs/namespace.c"; exit 1; }
+          grep -q "CONFIG_KSU=y" arch/arm64/configs/nabu_defconfig || { echo "[-] Missing CONFIG_KSU in defconfig"; exit 1; }
+          grep -q "CONFIG_KSU_MANUAL_HOOK=y" arch/arm64/configs/nabu_defconfig || { echo "[-] Missing CONFIG_KSU_MANUAL_HOOK in defconfig"; exit 1; }
           
           echo "[+] Pre-Flight Checks Passed 100%!"
 
@@ -115,9 +120,9 @@ jobs:
 
           # Print verified active settings from resolved .config
           echo "[+] Active Defconfig Verification from out/.config:"
-          grep -E "CONFIG_MILLET|CONFIG_STUNE_ASSIST|CONFIG_CPUSET_ASSIST|CONFIG_LITTLE_CPU_MASK|CONFIG_BIG_CPU_MASK|CONFIG_PRIME_CPU_MASK|CONFIG_KSU|CONFIG_OVERLAY_FS" out/.config || true
+          grep -E "CONFIG_KSU|CONFIG_OVERLAY_FS" out/.config || true
 
-          # Step 2: Compile discrete kernel image and device tree blobs (bypasses mkdtboimg.py / python2)
+          # Step 2: Compile kernel image and device tree blobs
           make -j$(nproc --all) O=out \
             ARCH=arm64 \
             CC=clang \
@@ -130,43 +135,54 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            Image.gz dtbs
+            Image dtbs
 
-      - name: Verify Kernel Image Artifacts
+      - name: Package Complete AnyKernel3 Flashable ZIP
         working-directory: kernel_source
         run: |
-          echo "[+] Verifying generated Image.gz..."
-          test -f out/arch/arm64/boot/Image.gz || { echo "[-] Missing Image.gz!"; exit 1; }
+          echo "[+] Packaging AnyKernel3 flashable archive..."
+          test -f out/arch/arm64/boot/Image || { echo "[-] Missing kernel Image!"; exit 1; }
           
-          # 1. Print file details and size
-          ls -lh out/arch/arm64/boot/Image.gz
+          # 1. Copy newly compiled kernel Image to AnyKernel3 directory
+          cp out/arch/arm64/boot/Image anykernel/Image
           
-          # 2. Test gzip integrity
-          gzip -t out/arch/arm64/boot/Image.gz || { echo "[-] Image.gz gzip integrity test failed!"; exit 1; }
+          # 2. Concatenate newly compiled SM8150 device tree blobs into matching dtb
+          cat out/arch/arm64/boot/dts/qcom/sm8150*.dtb > anykernel/dtb
+          echo "[+] Generated matched DTB ($(wc -c < anykernel/dtb) bytes)"
           
-          # 3. Verify file type
-          file out/arch/arm64/boot/Image.gz
+          # 3. Copy newly compiled dtbo overlay if generated
+          if [ -f out/arch/arm64/boot/dts/qcom/nabu-sm8150-overlay.dtbo ]; then
+            cp out/arch/arm64/boot/dts/qcom/nabu-sm8150-overlay.dtbo anykernel/dtbo.img
+          fi
           
-          mkdir -p ../output
-          cp out/arch/arm64/boot/Image.gz ../output/Image.gz
-          
+          # 4. Generate timestamped flashable ZIP package
           BUILD_DATE=$(date +'%Y%m%d_%H%M')
           echo "BUILD_DATE=${BUILD_DATE}" >> $GITHUB_ENV
-          echo "[+] Image.gz verified and staged successfully!"
+          
+          ZIP_NAME="AnyKernel3-nabu-HyperOS-KSU-Next-${BUILD_DATE}.zip"
+          echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
+          
+          mkdir -p ../output
+          (cd anykernel && zip -r9 "../../output/${ZIP_NAME}" ./* -x .git .gitignore out/ ./*.zip)
+          
+          # 5. Verify ZIP integrity
+          unzip -t "../output/${ZIP_NAME}" || { echo "[-] Generated ZIP is corrupted!"; exit 1; }
+          ls -lh "../output/${ZIP_NAME}"
+          echo "[+] Flashable package created successfully: ${ZIP_NAME}"
 
-      - name: Upload Kernel Image (Image.gz)
+      - name: Upload Flashable AnyKernel3 Package
         uses: actions/upload-artifact@v4
         with:
-          name: Image.gz-nabu-ksunext-v3-${{ env.BUILD_DATE }}
-          path: output/Image.gz
+          name: ${{ env.ZIP_NAME }}
+          path: output/${{ env.ZIP_NAME }}
 
       - name: Create GitHub Release
         if: ${{ inputs.create_release == true }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ env.BUILD_DATE }}
-          name: Mahiro Kernel Image.gz + KernelSU-Next v3 (${{ inputs.ksu_tag }})
-          files: output/Image.gz
+          name: Xiaomi Pad 5 (nabu) HyperOS Kernel + KernelSU-Next (${{ inputs.ksu_tag }})
+          files: output/${{ env.ZIP_NAME }}
           draft: false
           prerelease: false
         env:
