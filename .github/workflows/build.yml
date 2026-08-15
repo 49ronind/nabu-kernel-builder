@@ -20,6 +20,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
       - name: Maximize Build Space
         uses: easimon/maximize-build-space@master
         with:
@@ -122,7 +125,7 @@ jobs:
           
           echo "[+] Pre-Flight Checks Passed 100%!"
 
-      - name: Compile Kernel, DTBs & DTBO Image
+      - name: Compile Kernel & DTBs
         working-directory: kernel_source
         run: |
           export PATH="$(pwd)/../clang/bin:$PATH"
@@ -142,7 +145,7 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             nabu_defconfig
 
-          # Step 2: Compile discrete kernel image, device tree blobs, and dtbo container
+          # Step 2: Compile discrete kernel image and device tree blobs
           make -j$(nproc --all) O=out \
             ARCH=arm64 \
             CC=clang \
@@ -155,7 +158,7 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            Image.gz dtbs dtbo.img
+            Image.gz dtbs
 
       - name: Package with AnyKernel3
         run: |
@@ -204,22 +207,22 @@ jobs:
           EOF
           sed -i 's/^[ \t]*//' anykernel.sh
 
-          # Verify compiled kernel artifacts exist
+          # Verify compiled kernel artifacts and prebuilt dtbo exist
           test -f ../kernel_source/out/arch/arm64/boot/Image.gz || { echo "[-] Missing Image.gz"; exit 1; }
-          test -f ../kernel_source/out/arch/arm64/boot/dtbo.img || { echo "[-] Missing dtbo.img"; exit 1; }
           test -f ../kernel_source/out/arch/arm64/boot/dts/qcom/sm8150.dtb || { echo "[-] Missing sm8150.dtb"; exit 1; }
+          test -f ../prebuilts/dtbo.img || { echo "[-] Missing prebuilt dtbo.img"; exit 1; }
 
-          # 1. Copy standalone kernel image
+          # 1. Copy newly compiled standalone kernel image
           cp ../kernel_source/out/arch/arm64/boot/Image.gz Image.gz
 
-          # 2. Construct standalone DTB matching known-working release order
+          # 2. Construct newly compiled standalone DTB matching known-working release order
           cat ../kernel_source/out/arch/arm64/boot/dts/qcom/sm8150.dtb \
               ../kernel_source/out/arch/arm64/boot/dts/qcom/sm8150p.dtb \
               ../kernel_source/out/arch/arm64/boot/dts/qcom/sm8150p-v2.dtb \
               ../kernel_source/out/arch/arm64/boot/dts/qcom/sm8150-v2.dtb > dtb
 
-          # 3. Copy standalone DTBO image
-          cp ../kernel_source/out/arch/arm64/boot/dtbo.img dtbo.img
+          # 3. Copy known-working prebuilt DTBO image
+          cp ../prebuilts/dtbo.img dtbo.img
 
           echo "[+] Verified Package Artifacts:"
           ls -lh Image.gz dtb dtbo.img
