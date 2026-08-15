@@ -20,9 +20,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
       - name: Maximize Build Space
         uses: easimon/maximize-build-space@master
         with:
@@ -38,7 +35,7 @@ jobs:
           sudo apt update
           sudo apt install -y --no-install-recommends \
             build-essential bc flex bison libssl-dev libelf-dev \
-            libncurses-dev zip curl git lld llvm python3 \
+            libncurses-dev zip curl git lld llvm python3 file \
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
             binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
 
@@ -145,7 +142,7 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             nabu_defconfig
 
-          # Step 2: Compile discrete kernel image and device tree blobs
+          # Step 2: Compile discrete kernel image and device tree blobs (bypasses mkdtboimg.py / python2)
           make -j$(nproc --all) O=out \
             ARCH=arm64 \
             CC=clang \
@@ -160,92 +157,41 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             Image.gz dtbs
 
-      - name: Package with AnyKernel3
+      - name: Verify Kernel Image Artifacts
+        working-directory: kernel_source
         run: |
-          git clone https://github.com/osm0sis/AnyKernel3.git anykernel
-          cd anykernel
-
-          # Configure anykernel.sh to match known-working Nabu release
-          cat << 'EOF' > anykernel.sh
-          # AnyKernel3 Ramdisk Mod Script
-          # osm0sis @ xda-developers
-          properties() { '
-          kernel.string=Mahiro HyperOS Kernel + KernelSU-Next v3 for Xiaomi Pad 5 (nabu)
-          device.name1=nabu
-          do.devicecheck=1
-          do.modules=0
-          do.systemless=1
-          do.cleanup=1
-          do.cleanuponabort=0
-          '; }
-          block=boot;
-          is_slot_device=1;
-          ramdisk_compression=auto;
-          . tools/ak3-core.sh;
-          set_perm_recursive 0 0 755 644 $ramdisk/*;
-          set_perm_recursive 0 0 750 750 $ramdisk/init* $ramdisk/sbin;
-          dump_boot;
-          if [ -d $ramdisk/overlay ]; then
-          	rm -rf $ramdisk/overlay;
-          fi;
-          patch_cmdline androidboot.force_normal_boot=1
-          write_boot;
-
-          ## vendor_boot shell variables
-          block=/dev/block/bootdevice/by-name/vendor_boot;
-          is_slot_device=1;
-          ramdisk_compression=auto;
-          patch_vbmeta_flag=auto;
-
-          # reset for vendor_boot patching
-          reset_ak;
-
-          # vendor_boot install
-          dump_boot;
-
-          write_boot;
-          EOF
-          sed -i 's/^[ \t]*//' anykernel.sh
-
-          # Verify compiled kernel artifacts and prebuilt dtbo exist
-          test -f ../kernel_source/out/arch/arm64/boot/Image.gz || { echo "[-] Missing Image.gz"; exit 1; }
-          test -f ../kernel_source/out/arch/arm64/boot/dts/qcom/sm8150.dtb || { echo "[-] Missing sm8150.dtb"; exit 1; }
-          test -f ../prebuilts/dtbo.img || { echo "[-] Missing prebuilt dtbo.img"; exit 1; }
-
-          # 1. Copy newly compiled standalone kernel image
-          cp ../kernel_source/out/arch/arm64/boot/Image.gz Image.gz
-
-          # 2. Construct newly compiled standalone DTB matching known-working release order
-          cat ../kernel_source/out/arch/arm64/boot/dts/qcom/sm8150.dtb \
-              ../kernel_source/out/arch/arm64/boot/dts/qcom/sm8150p.dtb \
-              ../kernel_source/out/arch/arm64/boot/dts/qcom/sm8150p-v2.dtb \
-              ../kernel_source/out/arch/arm64/boot/dts/qcom/sm8150-v2.dtb > dtb
-
-          # 3. Copy known-working prebuilt DTBO image
-          cp ../prebuilts/dtbo.img dtbo.img
-
-          echo "[+] Verified Package Artifacts:"
-          ls -lh Image.gz dtb dtbo.img
-
+          echo "[+] Verifying generated Image.gz..."
+          test -f out/arch/arm64/boot/Image.gz || { echo "[-] Missing Image.gz!"; exit 1; }
+          
+          # 1. Print file details and size
+          ls -lh out/arch/arm64/boot/Image.gz
+          
+          # 2. Test gzip integrity
+          gzip -t out/arch/arm64/boot/Image.gz || { echo "[-] Image.gz gzip integrity test failed!"; exit 1; }
+          
+          # 3. Verify file type
+          file out/arch/arm64/boot/Image.gz
+          
+          mkdir -p ../output
+          cp out/arch/arm64/boot/Image.gz ../output/Image.gz
+          
           BUILD_DATE=$(date +'%Y%m%d_%H%M')
-          ZIP_NAME="Mahiro-HyperOS-KSUNext-v3-Nabu-${BUILD_DATE}.zip"
-          zip -r9 "../${ZIP_NAME}" * -x .git README.md *placeholder
-          echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
           echo "BUILD_DATE=${BUILD_DATE}" >> $GITHUB_ENV
+          echo "[+] Image.gz verified and staged successfully!"
 
-      - name: Upload Artifact
+      - name: Upload Kernel Image (Image.gz)
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ZIP_NAME }}
-          path: ${{ env.ZIP_NAME }}
+          name: Image.gz-nabu-ksunext-v3-${{ env.BUILD_DATE }}
+          path: output/Image.gz
 
       - name: Create GitHub Release
         if: ${{ inputs.create_release == true }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ env.BUILD_DATE }}
-          name: Mahiro Kernel + KernelSU-Next v3 (${{ inputs.ksu_tag }})
-          files: ${{ env.ZIP_NAME }}
+          name: Mahiro Kernel Image.gz + KernelSU-Next v3 (${{ inputs.ksu_tag }})
+          files: output/Image.gz
           draft: false
           prerelease: false
         env:
