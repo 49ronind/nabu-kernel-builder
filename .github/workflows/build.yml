@@ -90,15 +90,21 @@ jobs:
           print("[+] Successfully removed obsolete ksu_handle_devpts from fs/devpts/inode.c")
           '
 
-          # Configure defconfigs for Manual Hook mode and Device Tree Overlays
+          # Configure defconfigs for Manual Hook mode, Device Tree Overlays, and CPU cluster masks
           for conf in arch/arm64/configs/nabu_defconfig arch/arm64/configs/nabu-perf_defconfig; do
             if [ -f "$conf" ]; then
               echo "[+] Updating $conf..."
               sed -i '/CONFIG_KSU/d' "$conf" || true
               sed -i '/CONFIG_OVERLAY_FS/d' "$conf" || true
+              sed -i '/CONFIG_LITTLE_CPU_MASK/d' "$conf" || true
+              sed -i '/CONFIG_BIG_CPU_MASK/d' "$conf" || true
+              sed -i '/CONFIG_PRIME_CPU_MASK/d' "$conf" || true
               echo "CONFIG_KSU=y" >> "$conf"
               echo "CONFIG_KSU_MANUAL_HOOK=y" >> "$conf"
               echo "CONFIG_OVERLAY_FS=y" >> "$conf"
+              echo "CONFIG_LITTLE_CPU_MASK=15" >> "$conf"
+              echo "CONFIG_BIG_CPU_MASK=112" >> "$conf"
+              echo "CONFIG_PRIME_CPU_MASK=128" >> "$conf"
             fi
           done
 
@@ -119,6 +125,7 @@ jobs:
           grep -q "ksu_handle_sys_reboot" kernel/reboot.c || { echo "[-] Missing ksu_handle_sys_reboot"; exit 1; }
           ! grep -q "ksu_handle_devpts" fs/devpts/inode.c || { echo "[-] Obsolete ksu_handle_devpts still present"; exit 1; }
           grep -q "CONFIG_KSU_MANUAL_HOOK=y" arch/arm64/configs/nabu-perf_defconfig || { echo "[-] Missing CONFIG_KSU_MANUAL_HOOK"; exit 1; }
+          grep -q "CONFIG_LITTLE_CPU_MASK=15" arch/arm64/configs/nabu-perf_defconfig || { echo "[-] Missing CONFIG_LITTLE_CPU_MASK"; exit 1; }
           
           echo "[+] Pre-Flight Checks Passed 100%!"
 
