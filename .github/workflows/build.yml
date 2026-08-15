@@ -39,9 +39,9 @@ jobs:
             gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
             binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
 
-      - name: Clone Mahiro Nabu Kernel Source
+      - name: Clone Mahiro Nabu Kernel Source (HyperOS Branch)
         run: |
-          git clone --depth=1 https://github.com/utziacre/android_kernel_xiaomi_nabu.git kernel_source
+          git clone --depth=1 -b hyperos https://github.com/utziacre/android_kernel_xiaomi_nabu.git kernel_source
 
       - name: Download Official AOSP Clang Toolchain (r416183b)
         run: |
@@ -90,41 +90,15 @@ jobs:
           print("[+] Successfully removed obsolete ksu_handle_devpts from fs/devpts/inode.c")
           '
 
-          # Configure defconfigs for Manual Hook mode, CPU cluster masks, and Cpuset assist
+          # Configure defconfigs for KernelSU Manual Hook mode and OverlayFS
           for conf in arch/arm64/configs/nabu_defconfig arch/arm64/configs/nabu-perf_defconfig; do
             if [ -f "$conf" ]; then
               echo "[+] Updating $conf..."
               sed -i '/CONFIG_KSU/d' "$conf" || true
               sed -i '/CONFIG_OVERLAY_FS/d' "$conf" || true
-              sed -i '/CONFIG_LITTLE_CPU_MASK/d' "$conf" || true
-              sed -i '/CONFIG_BIG_CPU_MASK/d' "$conf" || true
-              sed -i '/CONFIG_PRIME_CPU_MASK/d' "$conf" || true
-              sed -i '/CONFIG_STUNE_ASSIST/d' "$conf" || true
-              sed -i '/CONFIG_CPUSET_ASSIST/d' "$conf" || true
-              sed -i '/CONFIG_CPUSET_AUDIO_APP/d' "$conf" || true
-              sed -i '/CONFIG_CPUSET_BG/d' "$conf" || true
-              sed -i '/CONFIG_CPUSET_CAMERA/d' "$conf" || true
-              sed -i '/CONFIG_CPUSET_DISPLAY/d' "$conf" || true
-              sed -i '/CONFIG_CPUSET_FG/d' "$conf" || true
-              sed -i '/CONFIG_CPUSET_RESTRICTED/d' "$conf" || true
-              sed -i '/CONFIG_CPUSET_SYSTEM_BG/d' "$conf" || true
-              sed -i '/CONFIG_CPUSET_TOP_APP/d' "$conf" || true
               echo "CONFIG_KSU=y" >> "$conf"
               echo "CONFIG_KSU_MANUAL_HOOK=y" >> "$conf"
               echo "CONFIG_OVERLAY_FS=y" >> "$conf"
-              echo "CONFIG_LITTLE_CPU_MASK=15" >> "$conf"
-              echo "CONFIG_BIG_CPU_MASK=112" >> "$conf"
-              echo "CONFIG_PRIME_CPU_MASK=128" >> "$conf"
-              echo "CONFIG_STUNE_ASSIST=y" >> "$conf"
-              echo "CONFIG_CPUSET_ASSIST=y" >> "$conf"
-              echo "CONFIG_CPUSET_AUDIO_APP=\"0-3,5-6\"" >> "$conf"
-              echo "CONFIG_CPUSET_BG=\"0-3\"" >> "$conf"
-              echo "CONFIG_CPUSET_CAMERA=\"0-3,6-7\"" >> "$conf"
-              echo "CONFIG_CPUSET_DISPLAY=\"4-7\"" >> "$conf"
-              echo "CONFIG_CPUSET_FG=\"0-3,5-6\"" >> "$conf"
-              echo "CONFIG_CPUSET_RESTRICTED=\"0-3\"" >> "$conf"
-              echo "CONFIG_CPUSET_SYSTEM_BG=\"0-3\"" >> "$conf"
-              echo "CONFIG_CPUSET_TOP_APP=\"0-7\"" >> "$conf"
             fi
           done
 
@@ -144,9 +118,9 @@ jobs:
           grep -q "ksu_handle_execveat" fs/exec.c || { echo "[-] Missing ksu_handle_execveat"; exit 1; }
           grep -q "ksu_handle_sys_reboot" kernel/reboot.c || { echo "[-] Missing ksu_handle_sys_reboot"; exit 1; }
           ! grep -q "ksu_handle_devpts" fs/devpts/inode.c || { echo "[-] Obsolete ksu_handle_devpts still present"; exit 1; }
-          grep -q "CONFIG_KSU_MANUAL_HOOK=y" arch/arm64/configs/nabu-perf_defconfig || { echo "[-] Missing CONFIG_KSU_MANUAL_HOOK"; exit 1; }
-          grep -q "CONFIG_LITTLE_CPU_MASK=15" arch/arm64/configs/nabu-perf_defconfig || { echo "[-] Missing CONFIG_LITTLE_CPU_MASK"; exit 1; }
-          grep -q "CONFIG_CPUSET_ASSIST=y" arch/arm64/configs/nabu-perf_defconfig || { echo "[-] Missing CONFIG_CPUSET_ASSIST"; exit 1; }
+          grep -q "CONFIG_KSU_MANUAL_HOOK=y" arch/arm64/configs/nabu_defconfig || { echo "[-] Missing CONFIG_KSU_MANUAL_HOOK"; exit 1; }
+          grep -q "CONFIG_MILLET=y" arch/arm64/configs/nabu_defconfig || { echo "[-] Missing CONFIG_MILLET"; exit 1; }
+          grep -q "CONFIG_CPUSET_ASSIST=y" arch/arm64/configs/nabu_defconfig || { echo "[-] Missing CONFIG_CPUSET_ASSIST"; exit 1; }
           
           echo "[+] Pre-Flight Checks Passed 100%!"
 
@@ -155,7 +129,7 @@ jobs:
         run: |
           export PATH="$(pwd)/../clang/bin:$PATH"
 
-          # Step 1: Generate production defconfig with full LLVM parameter set
+          # Step 1: Generate maintainer-intended defconfig with full LLVM parameter set
           make O=out \
             ARCH=arm64 \
             CC=clang \
@@ -168,7 +142,11 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            nabu-perf_defconfig
+            nabu_defconfig
+
+          # Print verified active settings from resolved .config
+          echo "[+] Active Defconfig Verification from out/.config:"
+          grep -E "CONFIG_MILLET|CONFIG_STUNE_ASSIST|CONFIG_CPUSET_ASSIST|CONFIG_LITTLE_CPU_MASK|CONFIG_BIG_CPU_MASK|CONFIG_PRIME_CPU_MASK" out/.config || true
 
           # Step 2: Compile discrete kernel image and device tree blobs (bypasses mkdtboimg.py / python2)
           make -j$(nproc --all) O=out \
